@@ -18,7 +18,7 @@ from util.tokenize import (
 )
 
 TFIDF_PICKLE_PATH = 'model/tfidf.pkl'
-KMEANS_PICKLE_PATH = 'model/kmeans.pkl'
+GMM_PICKLE_PATH = 'model/gmm.pkl'
 
 class WordCluster:
     def __init__(self, n_clusters=5, dataset_path='data/data.csv', retrain=False, json=False):
@@ -30,7 +30,7 @@ class WordCluster:
             self.data = pd.read_csv(dataset_path, encoding='utf-8')
         self.X = self._preprocess_data(self.data)
 
-        if retrain or not os.path.exists(TFIDF_PICKLE_PATH) or not os.path.exists(KMEANS_PICKLE_PATH):
+        if retrain or not os.path.exists(TFIDF_PICKLE_PATH) or not os.path.exists(GMM_PICKLE_PATH):
             self.train(self.X)
         else:
             self.load_from_pickle()
@@ -39,34 +39,36 @@ class WordCluster:
         return data[document_column]
 
     def load_from_pickle(self):
-        self.gmm = joblib.load(KMEANS_PICKLE_PATH)
+        self.gmm = joblib.load(GMM_PICKLE_PATH)
         self.tfidf_vectorizer = joblib.load(TFIDF_PICKLE_PATH)
+        self.tfidf_matrix = self.tfidf_vectorizer.fit_transform(self.X)
+        clusters = self.gmm.predict(self.tfidf_matrix.toarray())
+        self.data = self.data.assign(clusters=clusters)
 
     def get_topic_json(self, X):
         if not X:
             X = self.X
         vectorized_doc = self.tfidf_vectorizer.transform(X)
         predictions = self.gmm.predict_proba(vectorized_doc.toarray())
-        top_predictions = predictions.argsort()[0][::-1][:3]
+        top_predictions = predictions.argsort()[0][::-1][:self.n_clusters]
 
         topic_jobs = {}
         for i, cluster in enumerate(top_predictions):
-            doc_idx = self.cluster_id[self.cluster_id['clusters']==cluster].index
+            doc_idx = self.data[self.data['clusters']==cluster].index
             job_idx = list(cosine_similarity(vectorized_doc, self.tfidf_matrix[doc_idx]).argsort()[0][::-1][:5])
-            print(job_idx)
-            job_ids = self.cluster_id[self.cluster_id['clusters']==cluster].job_id.values
+            job_ids = self.data[self.data['clusters']==cluster].id.values
             job_ids = job_ids[job_idx]
 
             jobs = {}
             for j, job_id in enumerate(job_ids):
-                jobs[j] = job_id
+                jobs[j] = self.data[self.data.id==job_id].to_dict('records')
             topic_jobs['Topic {}'.format(i)] = jobs 
 
         return topic_jobs
 
     def train(self, X):
-        X = X
-        data = self.data
+        # X = X
+        # self.data = self.data
         stopwords = nltk.corpus.stopwords.words('english')
 
         totalvocab_stemmed = []
@@ -80,7 +82,7 @@ class WordCluster:
             totalvocab_tokenized.extend(all_words_tokenized)
 
         self.tfidf_vectorizer = TfidfVectorizer(max_df=0.7, 
-                                                max_features=300000,
+                                                max_features=200000,
                                                 min_df=0.2, 
                                                 stop_words='english',
                                                 use_idf=True, 
@@ -92,9 +94,9 @@ class WordCluster:
 
         self.gmm = GaussianMixture(n_components=self.n_clusters)
         self.gmm.fit(self.tfidf_matrix.toarray())
-        joblib.dump(self.gmm, KMEANS_PICKLE_PATH)
+        joblib.dump(self.gmm, GMM_PICKLE_PATH)
 
         clusters = self.gmm.predict(self.tfidf_matrix.toarray())
 
-        self.cluster_id = pd.DataFrame({'clusters': clusters, 'job_id': data['id']}, columns=['clusters', 'job_id'])
+        self.data = self.data.assign(clusters=clusters)
 
